@@ -551,6 +551,17 @@ tr.bd-row.open td{background:var(--surface-2)}
 .sync-state.ok{color:var(--good)} .sync-state.ok svg{fill:color-mix(in srgb,var(--good) 18%,transparent)}
 .sync-state.warn{color:var(--crit)}
 @media (max-width:600px){ .acct-choice{grid-template-columns:1fr} .act.acct{width:36px;height:36px} }
+
+.acct-tabs{display:inline-flex;gap:4px;padding:3px;border-radius:10px;background:var(--surface-2);margin-bottom:12px}
+.acct-tabs button{border:none;background:none;padding:6px 12px;border-radius:8px;font-weight:600;font-size:13px;color:var(--text-secondary);cursor:pointer}
+.acct-tabs button.on{background:var(--surface-1);color:var(--text-primary);box-shadow:0 1px 2px rgba(0,0,0,.08)}
+.acct-form{display:flex;flex-direction:column;gap:10px;max-width:420px}
+.acct-field{display:flex;flex-direction:column;gap:4px;font-size:12.5px;color:var(--text-secondary);font-weight:600}
+.acct-field input{font-size:15px}
+.acct-warn{margin-top:12px;padding:10px 12px;border-radius:10px;background:var(--warn-bg);color:var(--warn-ink)}
+.acct-warn strong{color:inherit}
+.acct-note{padding:8px 12px;border-radius:10px;background:var(--accent-soft);margin-bottom:10px}
+.acct-sub>summary{cursor:pointer;font-weight:600;font-size:13.5px;color:var(--accent);margin-top:6px}
 @media (prefers-reduced-motion: no-preference){ .alloc span,.timeline .track b,.ring circle{transition:all .4s ease} }
 </style>
 </head>
@@ -1076,18 +1087,45 @@ function save(){
 const SB_URL="https://iirxipkecwpsqgajorsj.supabase.co";
 const SB_KEY="sb_publishable__ZCE42c5mnhiIDwCf4Z6gQ_u1rzc-rd";
 const SB_LIB="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js";
-const sync={sb:null, user:null, status:"off", timer:null, busy:false, dirty:false, remoteAt:null, choice:null, ready:false, sent:false, sentTo:""};
+const sync={sb:null, user:null, status:"off", timer:null, busy:false, dirty:false, remoteAt:null, choice:null, ready:false, key:null, salt:null, pendingPw:null, mode:"login", note:"", recovery:false, lockedMode:"unlock"};
 function inClaude(){ return !!(window.claude&&window.claude.use); }
 function hasData(st){ return ["bank","cc","sav"].some(k=>((st&&st[k])||[]).length>0); }
 function dataStamp(st){ let last="", n=0; ["bank","cc","sav"].forEach(k=>{ const L=(st&&st[k])||[]; n+=L.length; L.forEach(t=>{ if(t.date>last) last=t.date; }); }); return {last,n}; }
-function cloudQueue(){ if(!sync.user||!sync.ready) return; sync.dirty=true; clearTimeout(sync.timer); sync.timer=setTimeout(syncPush,1500); }
+
+/* ---- versleuteling: AES-GCM 256, sleutel afgeleid van je wachtwoord (PBKDF2-SHA256).
+   In de database staat alleen versleutelde tekst; zonder je wachtwoord kan niemand (ook de beheerder niet) je gegevens lezen. */
+const KDF_ITER=310000;
+const b64=buf=>{ const a=new Uint8Array(buf); let s=""; for(let i=0;i<a.length;i+=0x8000) s+=String.fromCharCode.apply(null,a.subarray(i,i+0x8000)); return btoa(s); };
+const unb64=str=>Uint8Array.from(atob(str),c=>c.charCodeAt(0));
+async function deriveKey(pw, saltB64){
+  const base=await crypto.subtle.importKey("raw", new TextEncoder().encode(pw), "PBKDF2", false, ["deriveKey"]);
+  return crypto.subtle.deriveKey({name:"PBKDF2", salt:unb64(saltB64), iterations:KDF_ITER, hash:"SHA-256"}, base, {name:"AES-GCM", length:256}, true, ["encrypt","decrypt"]);
+}
+function newSalt(){ return b64(crypto.getRandomValues(new Uint8Array(16))); }
+async function encryptState(obj){
+  const iv=crypto.getRandomValues(new Uint8Array(12));
+  const ct=await crypto.subtle.encrypt({name:"AES-GCM", iv}, sync.key, new TextEncoder().encode(JSON.stringify(obj)));
+  return {v:1, salt:sync.salt, iv:b64(iv), ct:b64(ct), savedAt:obj._savedAt||0};
+}
+async function decryptState(d, key){
+  const pt=await crypto.subtle.decrypt({name:"AES-GCM", iv:unb64(d.iv)}, key||sync.key, unb64(d.ct));
+  return JSON.parse(new TextDecoder().decode(pt));
+}
+const KEYSTORE=uid=>"budgetplanner-sleutel-"+uid;
+async function storeKey(){ try{ const raw=await crypto.subtle.exportKey("raw", sync.key); localStorage.setItem(KEYSTORE(sync.user.id), JSON.stringify({k:b64(raw), salt:sync.salt})); }catch(_){} }
+async function loadStoredKey(){ try{ const o=JSON.parse(localStorage.getItem(KEYSTORE(sync.user.id))||"null"); if(!o) return null;
+  return {key:await crypto.subtle.importKey("raw", unb64(o.k), {name:"AES-GCM"}, true, ["encrypt","decrypt"]), salt:o.salt}; }catch(_){ return null; } }
+function forgetKey(uid){ try{ localStorage.removeItem(KEYSTORE(uid)); }catch(_){} }
+async function setKeyFromPassword(pw, salt){ sync.salt=salt||newSalt(); sync.key=await deriveKey(pw, sync.salt); await storeKey(); }
+
+function cloudQueue(){ if(!sync.user||!sync.ready||!sync.key) return; sync.dirty=true; clearTimeout(sync.timer); sync.timer=setTimeout(syncPush,1500); }
 function setSync(st){ sync.status=st; renderAcct(); }
 async function syncPush(){
-  if(!sync.user||!sync.ready) return; if(sync.busy){ sync.dirty=true; return; }
+  if(!sync.user||!sync.ready||!sync.key) return; if(sync.busy){ sync.dirty=true; return; }
   sync.busy=true; sync.dirty=false; setSync("saving");
   try{
-    const now=new Date().toISOString();
-    const {error}=await sync.sb.from("planner_state").upsert({user_id:sync.user.id, data:state, updated_at:now});
+    const now=new Date().toISOString(); const data=await encryptState(state);
+    const {error}=await sync.sb.from("planner_state").upsert({user_id:sync.user.id, data, updated_at:now});
     if(error) throw error; sync.remoteAt=now; setSync("ok");
   }catch(e){ console.warn("sync",e); setSync(navigator.onLine===false?"offline":"error"); }
   sync.busy=false; if(sync.dirty) syncPush();
@@ -1096,47 +1134,64 @@ async function syncFetch(){
   const {data,error}=await sync.sb.from("planner_state").select("data,updated_at").eq("user_id",sync.user.id).maybeSingle();
   if(error) throw error; return data;
 }
-function applyRemote(row){
+/* rij uit de database leesbaar maken: {plain} of {fail} */
+async function openRow(row){
+  if(!row||!row.data) return {plain:null};
+  if(row.data.ct){ if(!sync.key || row.data.salt!==sync.salt) return {fail:"key"}; try{ return {plain:await decryptState(row.data)}; }catch(_){ return {fail:"key"}; } }
+  return {plain:row.data}; // oude, nog niet versleutelde rij: wordt bij de volgende opslag versleuteld
+}
+function applyRemote(plain, at){
   try{ const cur=localStorage.getItem(STORE_KEY); if(cur) localStorage.setItem(STORE_KEY+"-vorige", cur); }catch(_){}
-  state=Object.assign({bank:[],cc:[],sav:[],invValues:[],overrides:{},rules:[],fixedOff:{},fixedManual:[],scenario:[]}, row.data);
-  migrateLegacy(); applyCustomCats(); sync.remoteAt=row.updated_at;
+  state=Object.assign({bank:[],cc:[],sav:[],invValues:[],overrides:{},rules:[],fixedOff:{},fixedManual:[],scenario:[]}, plain);
+  migrateLegacy(); applyCustomCats(); sync.remoteAt=at;
   try{ localStorage.setItem(STORE_KEY, JSON.stringify(state)); }catch(_){}
   renderAll();
 }
 async function syncStart(){
   setSync("loading");
   try{
-    const row=await syncFetch(); const L=hasData(state), R=row&&hasData(row.data);
+    const row=await syncFetch();
+    if(sync.recovery){ setSync("recovery"); openAcct(); return; }
+    // sleutel regelen
+    const rowSalt=row&&row.data&&row.data.ct ? row.data.salt : null;
+    if(sync.pendingPw){ await setKeyFromPassword(sync.pendingPw, rowSalt||sync.salt||null); sync.pendingPw=null; }
+    else if(!sync.key){ const st=await loadStoredKey(); if(st && (!rowSalt || st.salt===rowSalt)){ sync.key=st.key; sync.salt=st.salt; } }
+    if(!sync.key || (rowSalt && rowSalt!==sync.salt)){ sync.key=null; sync.lockedMode="unlock"; setSync("locked"); openAcct(); return; }
+    const o=await openRow(row);
+    if(o.fail){ sync.key=null; forgetKey(sync.user.id); sync.lockedMode="unlock"; sync.note="Dit wachtwoord opent je opgeslagen gegevens niet. Is je wachtwoord onlangs gewijzigd? Gebruik dan het nieuwe."; setSync("locked"); openAcct(); return; }
+    const remote=o.plain; const L=hasData(state), R=hasData(remote);
     const known = state.syncUser===sync.user.id;
-    if(!R){ sync.ready=true; state.syncUser=sync.user.id; if(L) await syncPush(); else setSync("ok"); }
-    else if(!L){ applyRemote(row); state.syncUser=sync.user.id; sync.ready=true; setSync("ok"); }
-    else if(known){ // dit apparaat hoorde al bij dit account: nieuwste wint
-      if((state._savedAt||0) > (row.data._savedAt||0)){ sync.ready=true; await syncPush(); } else { applyRemote(row); sync.ready=true; setSync("ok"); }
-    } else { sync.choice=row; setSync("choose"); openAcct(); }
+    if(!R){ sync.ready=true; state.syncUser=sync.user.id; await syncPush(); }
+    else if(!L){ applyRemote(remote,row.updated_at); state.syncUser=sync.user.id; sync.ready=true; if(!row.data.ct) await syncPush(); else setSync("ok"); }
+    else if(known){
+      if((state._savedAt||0) > (remote._savedAt||0)){ sync.ready=true; await syncPush(); }
+      else { applyRemote(remote,row.updated_at); sync.ready=true; if(!row.data.ct) await syncPush(); else setSync("ok"); }
+    } else { sync.choice={plain:remote, at:row.updated_at}; setSync("choose"); openAcct(); }
   }catch(e){ console.warn("sync start",e); setSync(navigator.onLine===false?"offline":"error"); }
 }
-async function syncResume(){ // terug naar het tabblad: kijken of een ander apparaat iets nieuws heeft opgeslagen
-  if(!sync.user||!sync.ready||sync.busy||sync.dirty) return;
+async function syncResume(){
+  if(!sync.user||!sync.ready||!sync.key||sync.busy||sync.dirty) return;
   try{ const {data}=await sync.sb.from("planner_state").select("updated_at").eq("user_id",sync.user.id).maybeSingle();
-    if(data && data.updated_at!==sync.remoteAt && (!sync.remoteAt || data.updated_at>sync.remoteAt)){ const row=await syncFetch(); if(row && (row.data._savedAt||0)>(state._savedAt||0)){ applyRemote(row); setSync("ok"); } else sync.remoteAt=data.updated_at; } }catch(_){}
-}
-async function claudeCleanup(){
-  try{ const [db,user]=await Promise.all([window.claude.use("db"), window.claude.use("user")]); if(!db||!user) return;
-    const uid=await user.id(); if(!uid) return; const col=db.collection("data/users/"+uid);
-    const m=await col.doc("main").get(); if(!m.exists) return; const n=(m.data()||{}).n||0;
-    for(let i=0;i<Math.max(n,12);i++){ try{ await col.doc("c"+i).delete(); }catch(_){} }
-    await col.doc("main").delete(); }catch(e){}
+    if(!data || data.updated_at===sync.remoteAt || (sync.remoteAt && data.updated_at<=sync.remoteAt)) return;
+    const row=await syncFetch(); const o=await openRow(row);
+    if(o.fail){ sync.ready=false; sync.key=null; forgetKey(sync.user.id); sync.lockedMode="unlock"; sync.note="Je wachtwoord is op een ander apparaat gewijzigd. Log hier in met je nieuwe wachtwoord."; setSync("locked"); openAcct(); return; }
+    if(o.plain && (o.plain._savedAt||0)>(state._savedAt||0)){ applyRemote(o.plain,row.updated_at); setSync("ok"); } else sync.remoteAt=row.updated_at;
+  }catch(_){}
 }
 async function syncInit(){
-  if(inClaude()){ claudeCleanup(); return; } // in de Claude-weergave geen account; wel een oude kopie in je Claude-account opruimen
+  if(inClaude()){ claudeCleanup(); return; }
+  if(!(window.crypto&&crypto.subtle)) return;
   try{ if(!window.supabase) await loadScript(SB_LIB); }catch(e){ return; }
   if(!window.supabase) return;
+  if(/type=recovery/.test(location.hash)) sync.recovery=true;
   sync.sb=window.supabase.createClient(SB_URL, SB_KEY, {auth:{flowType:"implicit", persistSession:true, autoRefreshToken:true, detectSessionInUrl:true}});
   $("acctBtn").classList.remove("hidden"); $("wzLogin").classList.remove("hidden");
   sync.sb.auth.onAuthStateChange((ev,session)=>{
     const u=session&&session.user;
-    if(u && (!sync.user || sync.user.id!==u.id)){ sync.user=u; sync.ready=false; if(location.hash.includes("access_token")) history.replaceState(null,"",location.pathname+location.search); setTimeout(syncStart,0); }
-    if(!u && sync.user){ sync.user=null; sync.ready=false; setSync("off"); }
+    if(location.hash.includes("access_token")||location.hash.includes("type=")) history.replaceState(null,"",location.pathname+location.search);
+    if(ev==="PASSWORD_RECOVERY"){ sync.user=u; sync.recovery=true; sync.ready=false; sync.key=null; setSync("recovery"); openAcct(); return; }
+    if(u && (!sync.user || sync.user.id!==u.id)){ sync.user=u; sync.ready=false; if(!sync.recovery) setTimeout(syncStart,0); }
+    if(!u && sync.user){ sync.user=null; sync.ready=false; sync.key=null; setSync("off"); }
     renderAcct();
   });
   const {data}=await sync.sb.auth.getSession(); if(!data.session) setSync("off");
@@ -1144,35 +1199,68 @@ async function syncInit(){
   window.addEventListener("online",()=>{ if(sync.user&&sync.ready&&(sync.status==="offline"||sync.status==="error")) syncPush(); });
 }
 function openAcct(){ $("acctPanel").classList.remove("hidden"); renderAcct(); $("acctPanel").scrollIntoView({behavior:"smooth",block:"start"}); }
+const PW_HINT=`<p class="small muted acct-warn">Je gegevens worden versleuteld met je wachtwoord. Daardoor kan niemand anders ze lezen, ook de beheerder van de planner niet. Het betekent ook: <strong>vergeet je je wachtwoord, dan zijn de gegevens in je account niet meer te openen.</strong> Wat op je apparaat staat en je back-ups blijven wel bruikbaar.</p>`;
+function pwField(id,label,auto){ return `<label class="acct-field"><span>${label}</span><input type="password" id="${id}" required minlength="8" autocomplete="${auto}"></label>`; }
 function renderAcct(){
   const btn=$("acctBtn"); if(!btn) return; const u=sync.user;
   btn.classList.toggle("in", !!u); $("acctIni").textContent = u&&u.email ? u.email[0].toUpperCase() : "";
-  const dot=$("acctDot"); dot.className="acct-dot "+({ok:"ok",saving:"busy",loading:"busy",error:"warn",offline:"warn",choose:"warn"}[sync.status]||"");
+  $("acctDot").className="acct-dot "+({ok:"ok",saving:"busy",loading:"busy",error:"warn",offline:"warn",choose:"warn",locked:"warn",recovery:"warn"}[sync.status]||"");
   const chip=$("syncState");
-  if(chip){ const show=!!u; chip.classList.toggle("hidden",!show);
-    const t={ok:"Gesynchroniseerd",saving:"Opslaan…",loading:"Ophalen…",error:"Niet gesynchroniseerd",offline:"Offline",choose:"Kies welke gegevens"}[sync.status]||"";
-    chip.className="sync-state "+({ok:"ok",error:"warn",offline:"warn",choose:"warn"}[sync.status]||"busy")+(show?"":" hidden"); chip.querySelector("span").textContent=t; }
-  const bt=$("backupText"); if(bt && u) bt.textContent="Je gegevens worden automatisch opgeslagen in je account en staan zo ook op je andere apparaten. Een back-up is een extra bestand dat je zelf bewaart, bijvoorbeeld in iCloud of OneDrive.";
+  if(chip){ const show=!!u; const t={ok:"Gesynchroniseerd",saving:"Opslaan…",loading:"Ophalen…",error:"Niet gesynchroniseerd",offline:"Offline",choose:"Kies welke gegevens",locked:"Wachtwoord nodig",recovery:"Nieuw wachtwoord nodig"}[sync.status]||"";
+    chip.className="sync-state "+({ok:"ok",error:"warn",offline:"warn",choose:"warn",locked:"warn",recovery:"warn"}[sync.status]||"busy")+(show?"":" hidden"); chip.querySelector("span").textContent=t; }
+  const bt=$("backupText"); if(bt && u && sync.key) bt.textContent="Je gegevens worden versleuteld opgeslagen in je account en staan zo ook op je andere apparaten. Een back-up is een extra bestand dat je zelf bewaart, bijvoorbeeld in iCloud of OneDrive. Handig als je ooit je wachtwoord vergeet.";
   const body=$("acctBody"); if(!body||$("acctPanel").classList.contains("hidden")) return;
+  const note=sync.note?`<div class="small acct-note">${esc(sync.note)}</div>`:"";
   if(!u){
-    $("acctTitle").textContent="Inloggen";
-    body.innerHTML = sync.sent ? `<p>We hebben een inloglink gestuurd naar <strong>${esc(sync.sentTo)}</strong>. Open je mail en tik op de link; je komt dan ingelogd terug in de planner.</p><p class="small muted">Geen mail gezien? Kijk ook in je spam. <button class="link" id="acctRetry">Ander e-mailadres of opnieuw sturen</button></p>`
-      : `<p class="small muted" style="margin-top:0">Log in met je e-mailadres om je gegevens op al je apparaten te hebben, bijvoorbeeld je telefoon en je laptop. Je krijgt een link in je mail, een wachtwoord is niet nodig. Je gegevens zijn alleen voor jou zichtbaar.</p>
-        <form id="acctForm" class="row" style="gap:8px"><input type="email" id="acctEmail" required placeholder="jouw@email.nl" autocomplete="email" style="flex:1;min-width:200px"><button class="primary" type="submit">Stuur inloglink</button></form><div class="small" id="acctMsg" style="margin-top:8px"></div>`;
+    const m=sync.mode;
+    $("acctTitle").textContent = m==="signup"?"Account maken":m==="forgot"?"Wachtwoord vergeten":"Inloggen";
+    if(m==="sent"){ body.innerHTML=`${note}<p>Open de mail die we je hebben gestuurd en tik op de link.</p><p class="small muted">Geen mail gezien? Kijk ook in je spam. <button class="link" data-mode="login">Terug naar inloggen</button></p>`; return; }
+    const tabs=m==="forgot"?"":`<div class="acct-tabs"><button type="button" data-mode="login" class="${m==="login"?"on":""}">Inloggen</button><button type="button" data-mode="signup" class="${m==="signup"?"on":""}">Account maken</button></div>`;
+    const intro = m==="signup" ? `<p class="small muted" style="margin-top:0">Met een account staan je gegevens op al je apparaten, bijvoorbeeld je telefoon en je laptop.</p>`
+      : m==="forgot" ? `<p class="small muted" style="margin-top:0">Je krijgt een mail met een link om een nieuw wachtwoord te kiezen.</p>` : `<p class="small muted" style="margin-top:0">Log in om je gegevens op al je apparaten te hebben.</p>`;
+    body.innerHTML=`${tabs}${note}${intro}
+      <form id="acctForm" data-kind="${m}" class="acct-form">
+        <label class="acct-field"><span>E-mailadres</span><input type="email" id="acctEmail" required autocomplete="email" placeholder="jouw@email.nl"></label>
+        ${m==="forgot"?"":pwField("acctPw","Wachtwoord",m==="signup"?"new-password":"current-password")}
+        ${m==="signup"?pwField("acctPw2","Herhaal wachtwoord","new-password"):""}
+        <div class="row" style="gap:10px;align-items:center"><button class="primary" type="submit">${m==="signup"?"Account maken":m==="forgot"?"Stuur herstellink":"Inloggen"}</button>
+        ${m==="login"?`<button type="button" class="link" data-mode="forgot">Wachtwoord vergeten?</button>`:m==="forgot"?`<button type="button" class="link" data-mode="login">Terug</button>`:""}</div>
+        <div class="small" id="acctMsg"></div>
+      </form>${m==="signup"?PW_HINT:""}`;
     return;
   }
   $("acctTitle").textContent="Je account";
+  if(sync.status==="recovery"){
+    body.innerHTML=`<p style="margin-top:0">Kies een nieuw wachtwoord voor <strong>${esc(u.email||"")}</strong>.</p>
+      <form id="acctForm" data-kind="newpw" class="acct-form">${pwField("acctPw","Nieuw wachtwoord","new-password")}${pwField("acctPw2","Herhaal wachtwoord","new-password")}
+      <div class="row"><button class="primary" type="submit">Wachtwoord opslaan</button></div><div class="small" id="acctMsg"></div></form>
+      <p class="small muted acct-warn">Je opgeslagen gegevens waren versleuteld met je oude wachtwoord en zijn daarmee niet meer te openen. ${hasData(state)?"De gegevens op dit apparaat worden met je nieuwe wachtwoord opnieuw versleuteld opgeslagen.":"Op dit apparaat staan geen gegevens. Heb je een back-up of een ander apparaat met je gegevens? Log daar in met je nieuwe wachtwoord; de gegevens worden dan opnieuw opgeslagen."}</p>`;
+    return;
+  }
+  if(sync.status==="locked"){
+    const set=sync.lockedMode==="set";
+    body.innerHTML=`${note}<p style="margin-top:0">${set?`Kies een wachtwoord voor <strong>${esc(u.email||"")}</strong>. Daarmee worden je gegevens voortaan versleuteld.`:`Ingelogd als <strong>${esc(u.email||"")}</strong>. Vul je wachtwoord in om je gegevens op dit apparaat te openen.`}</p>
+      <form id="acctForm" data-kind="${set?"setpw":"unlock"}" class="acct-form">${pwField("acctPw",set?"Nieuw wachtwoord":"Wachtwoord",set?"new-password":"current-password")}${set?pwField("acctPw2","Herhaal wachtwoord","new-password"):""}
+      <div class="row" style="gap:10px;align-items:center"><button class="primary" type="submit">${set?"Wachtwoord instellen":"Openen"}</button>
+      <button type="button" class="link" data-locked="${set?"unlock":"set"}">${set?"Ik heb al een wachtwoord":"Nog geen wachtwoord? Kies er een"}</button></div><div class="small" id="acctMsg"></div></form>
+      ${set?PW_HINT:""}<div class="row" style="margin-top:12px"><button class="link" id="acctOut">Uitloggen</button></div>`;
+    return;
+  }
   if(sync.status==="choose" && sync.choice){
-    const R=dataStamp(sync.choice.data), L=dataStamp(state);
+    const R=dataStamp(sync.choice.plain), L=dataStamp(state);
     body.innerHTML=`<p style="margin-top:0">Zowel dit apparaat als je account bevat gegevens. Welke wil je gebruiken? De andere wordt vervangen.</p>
-      <div class="acct-choice"><button class="acct-opt" data-pick="remote"><strong>Uit mijn account</strong><span>${R.n} transacties, t/m ${R.last?fmtDate(R.last):"–"}<br>laatst opgeslagen ${fmtDate(String(sync.choice.updated_at).slice(0,10))}</span></button>
+      <div class="acct-choice"><button class="acct-opt" data-pick="remote"><strong>Uit mijn account</strong><span>${R.n} transacties, t/m ${R.last?fmtDate(R.last):"–"}<br>laatst opgeslagen ${fmtDate(String(sync.choice.at).slice(0,10))}</span></button>
       <button class="acct-opt" data-pick="local"><strong>Van dit apparaat</strong><span>${L.n} transacties, t/m ${L.last?fmtDate(L.last):"–"}</span></button></div>
       <p class="small muted">Twijfel je? Maak eerst een back-up bij Instellingen → Back-up.</p>`;
     return;
   }
-  const st={ok:"Alles is opgeslagen in je account.",saving:"Bezig met opslaan…",loading:"Gegevens ophalen…",error:"Opslaan lukt nu niet. Je wijzigingen staan wel in deze browser en worden opgeslagen zodra het weer lukt.",offline:"Je bent offline. Wijzigingen worden opgeslagen zodra je weer verbinding hebt."}[sync.status]||"";
-  body.innerHTML=`<p style="margin-top:0">Ingelogd als <strong>${esc(u.email||"")}</strong></p><p class="small ${sync.status==="error"||sync.status==="offline"?"":"muted"}" ${sync.status==="error"?'style="color:var(--crit)"':""}>${st}</p>
-    <div class="row" style="gap:8px;margin-top:10px"><button id="acctOut">Uitloggen</button><button class="link danger" id="acctOutWipe">Uitloggen en gegevens van dit apparaat wissen</button></div>
+  const st={ok:"Alles is versleuteld opgeslagen in je account.",saving:"Bezig met opslaan…",loading:"Gegevens ophalen…",error:"Opslaan lukt nu niet. Je wijzigingen staan wel in deze browser en worden opgeslagen zodra het weer lukt.",offline:"Je bent offline. Wijzigingen worden opgeslagen zodra je weer verbinding hebt."}[sync.status]||"";
+  body.innerHTML=`${note}<p style="margin-top:0">Ingelogd als <strong>${esc(u.email||"")}</strong></p><p class="small ${sync.status==="error"||sync.status==="offline"?"":"muted"}" ${sync.status==="error"?'style="color:var(--crit)"':""}><span class="lock-ico" aria-hidden="true">🔒</span> ${st}</p>
+    <details class="acct-sub"><summary>Wachtwoord wijzigen</summary>
+      <form id="acctForm" data-kind="changepw" class="acct-form" style="margin-top:8px">${pwField("acctPw","Nieuw wachtwoord","new-password")}${pwField("acctPw2","Herhaal wachtwoord","new-password")}
+      <div class="row"><button class="primary" type="submit">Wijzigen</button></div><div class="small" id="acctMsg"></div></form>
+      <p class="small muted">Je gegevens worden direct opnieuw versleuteld met je nieuwe wachtwoord. Op je andere apparaten log je daarna opnieuw in.</p></details>
+    <div class="row" style="gap:8px;margin-top:12px"><button id="acctOut">Uitloggen</button><button class="link danger" id="acctOutWipe">Uitloggen en gegevens van dit apparaat wissen</button></div>
     <p class="small muted" style="margin-top:10px">Gebruik je een computer van iemand anders? Kies dan de tweede optie, dan blijven er geen gegevens achter.</p>`;
 }
 function bindAcct(){
@@ -1180,21 +1268,39 @@ $("acctBtn").addEventListener("click",()=>{ if($("acctPanel").classList.contains
 $("acctClose").addEventListener("click",()=>$("acctPanel").classList.add("hidden"));
 $("syncState").addEventListener("click",openAcct);
 $("wzLoginBtn").addEventListener("click",openAcct);
-$("acctPanel").addEventListener("submit",async e=>{ if(e.target.id!=="acctForm") return; e.preventDefault();
-  const email=$("acctEmail").value.trim(); const msg=$("acctMsg"); const btn=e.target.querySelector("button"); btn.disabled=true; msg.textContent="Versturen…";
-  const {error}=await sync.sb.auth.signInWithOtp({email, options:{emailRedirectTo: location.origin+location.pathname}});
+const redirect=()=>location.origin+location.pathname;
+const errTxt=e=>{ const m=(e&&e.message)||""; if(/invalid login|invalid credentials/i.test(m)) return "E-mailadres of wachtwoord klopt niet."; if(/not confirmed/i.test(m)) return "Je hebt je e-mailadres nog niet bevestigd. Kijk in je mail."; if(/already registered|already exists/i.test(m)) return "Er bestaat al een account met dit e-mailadres. Log in, of kies 'Wachtwoord vergeten?'."; if(/rate|seconds|too many/i.test(m)) return "Even wachten en dan opnieuw proberen."; if(/password/i.test(m)&&/(short|least|weak)/i.test(m)) return "Kies een langer of sterker wachtwoord."; return "Dat lukte niet: "+m; };
+$("acctPanel").addEventListener("submit",async e=>{ const f=e.target; if(f.id!=="acctForm") return; e.preventDefault();
+  const kind=f.dataset.kind, msg=$("acctMsg"), btn=f.querySelector("button[type=submit]");
+  const email=$("acctEmail")?$("acctEmail").value.trim():(sync.user&&sync.user.email); const pw=$("acctPw")?$("acctPw").value:""; const pw2=$("acctPw2")?$("acctPw2").value:null;
+  if(pw2!=null && pw!==pw2){ msg.innerHTML=`<span style="color:var(--crit)">De wachtwoorden zijn niet hetzelfde.</span>`; return; }
+  if(pw && pw.length<8 && kind!=="login" && kind!=="unlock"){ msg.innerHTML=`<span style="color:var(--crit)">Kies een wachtwoord van minstens 8 tekens.</span>`; return; }
+  btn.disabled=true; msg.textContent= kind==="login"||kind==="unlock" ? "Bezig… (het versleutelen kost een paar tellen)" : "Bezig…"; sync.note="";
+  try{
+    if(kind==="login"){ sync.pendingPw=pw; const {error}=await sync.sb.auth.signInWithPassword({email,password:pw}); if(error){ sync.pendingPw=null; throw error; } }
+    else if(kind==="signup"){ const {data,error}=await sync.sb.auth.signUp({email,password:pw,options:{emailRedirectTo:redirect()}}); if(error) throw error;
+      if(data.session){ sync.pendingPw=pw; /* direct ingelogd: onAuthStateChange start de synchronisatie */ }
+      else { sync.mode="sent"; sync.note="Bevestig je e-mailadres via de link in je mail. Daarna log je hier in met je wachtwoord."; renderAcct(); } }
+    else if(kind==="forgot"){ const {error}=await sync.sb.auth.resetPasswordForEmail(email,{redirectTo:redirect()}); if(error) throw error; sync.mode="sent"; sync.note="Als er een account bij dit e-mailadres hoort, staat er nu een mail met een herstellink in je inbox."; renderAcct(); }
+    else if(kind==="unlock"){ const {error}=await sync.sb.auth.signInWithPassword({email:sync.user.email,password:pw}); if(error) throw error; sync.pendingPw=pw; sync.key=null; await syncStart(); }
+    else if(kind==="setpw"||kind==="newpw"){ const {error}=await sync.sb.auth.updateUser({password:pw}); if(error && !/same/i.test(error.message)) throw error;
+      sync.recovery=false; await setKeyFromPassword(pw,null); state.syncUser=sync.user.id; sync.ready=true;
+      if(kind==="setpw"){ const row=await syncFetch(); if(row&&row.data&&!row.data.ct&&hasData(row.data)&&!hasData(state)) applyRemote(row.data,row.updated_at); }
+      await syncPush(); }
+    else if(kind==="changepw"){ const {error}=await sync.sb.auth.updateUser({password:pw}); if(error) throw error; await setKeyFromPassword(pw,null); await syncPush(); sync.note="Je wachtwoord is gewijzigd en je gegevens zijn opnieuw versleuteld."; renderAcct(); }
+  }catch(err){ msg.innerHTML=`<span style="color:var(--crit)">${esc(errTxt(err))}</span>`; }
   btn.disabled=false;
-  if(error){ msg.innerHTML=`<span style="color:var(--crit)">${/rate|seconds/i.test(error.message)?"Even wachten: je kunt over een minuutje opnieuw een link aanvragen.":"Versturen lukte niet: "+esc(error.message)}</span>`; return; }
-  sync.sent=true; sync.sentTo=email; renderAcct(); });
+});
 $("acctPanel").addEventListener("click",async e=>{
-  if(e.target.id==="acctRetry"){ sync.sent=false; renderAcct(); return; }
+  const md=e.target.closest("[data-mode]"); if(md){ sync.mode=md.dataset.mode; sync.note=""; renderAcct(); return; }
+  const lk=e.target.closest("[data-locked]"); if(lk){ sync.lockedMode=lk.dataset.locked; sync.note=""; renderAcct(); return; }
   const pick=e.target.closest("[data-pick]");
-  if(pick){ const row=sync.choice; sync.choice=null; state.syncUser=sync.user.id;
-    if(pick.dataset.pick==="remote"){ applyRemote(row); sync.ready=true; setSync("ok"); } else { sync.ready=true; await syncPush(); }
+  if(pick){ const ch=sync.choice; sync.choice=null; state.syncUser=sync.user.id; sync.ready=true;
+    if(pick.dataset.pick==="remote"){ applyRemote(ch.plain,ch.at); setSync("ok"); } else await syncPush();
     return; }
-  if(e.target.id==="acctOut"||e.target.id==="acctOutWipe"){ const wipe=e.target.id==="acctOutWipe";
+  if(e.target.id==="acctOut"||e.target.id==="acctOutWipe"){ const wipe=e.target.id==="acctOutWipe"; const uid=sync.user&&sync.user.id;
     if(sync.dirty||sync.busy){ clearTimeout(sync.timer); try{ await syncPush(); }catch(_){} }
-    await sync.sb.auth.signOut(); sync.user=null; sync.ready=false; sync.sent=false;
+    await sync.sb.auth.signOut(); if(uid) forgetKey(uid); sync.user=null; sync.ready=false; sync.key=null; sync.mode="login"; sync.note="";
     if(wipe){ try{ localStorage.removeItem(STORE_KEY); localStorage.removeItem(STORE_KEY+"-vorige"); }catch(_){} location.reload(); return; }
     delete state.syncUser; try{ localStorage.setItem(STORE_KEY, JSON.stringify(state)); }catch(_){}
     setSync("off"); renderAcct(); }
