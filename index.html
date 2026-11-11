@@ -529,6 +529,28 @@ tr.bd-row.open td{background:var(--surface-2)}
 .yr-track i{display:block;height:100%;border-radius:6px;background:var(--series-2)}
 .yr-v{font-variant-numeric:tabular-nums;color:var(--text-secondary);min-width:64px;text-align:right}
 @media (max-width:600px){ .yr-stats{grid-template-columns:repeat(2,minmax(0,1fr))} .yr-bar{grid-template-columns:minmax(0,110px) minmax(0,1fr) auto} }
+
+/* account */
+.act.acct{position:relative;width:40px;padding:0;justify-content:center}
+#dataBar.hidden + .act.acct{margin-left:auto}
+#dataBar + .act.acct{margin-left:8px}
+.act.acct .acct-ini{display:none;font-weight:700;font-size:15px}
+.act.acct.in svg{display:none} .act.acct.in .acct-ini{display:inline}
+.act.acct.in{background:var(--accent-soft);color:var(--accent);border-color:color-mix(in srgb,var(--accent) 35%,var(--border))}
+.acct-dot{position:absolute;right:3px;bottom:3px;width:9px;height:9px;border-radius:50%;border:2px solid var(--surface-1);display:none}
+.act.acct.in .acct-dot{display:block;background:var(--text-muted)}
+.act.acct.in .acct-dot.ok{background:var(--good)} .act.acct.in .acct-dot.warn{background:var(--crit)}
+#acctPanel{margin-bottom:16px}
+.acct-choice{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin:12px 0}
+.acct-opt{display:flex;flex-direction:column;gap:4px;text-align:left;padding:14px;border-radius:12px;border:1px solid var(--border);background:var(--surface-1);cursor:pointer;color:var(--text-primary)}
+.acct-opt:hover{border-color:var(--accent);background:var(--accent-soft)}
+.acct-opt span{font-size:12.5px;color:var(--text-secondary);line-height:1.4}
+.dataline{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.sync-state{margin-left:auto;display:inline-flex;align-items:center;gap:5px;font-size:11.5px;font-weight:600;color:var(--text-muted);white-space:nowrap;background:none;border:none;padding:0;cursor:pointer}
+.sync-state svg{width:15px;height:15px;fill:none;stroke:currentColor;stroke-width:1.6;stroke-linejoin:round}
+.sync-state.ok{color:var(--good)} .sync-state.ok svg{fill:color-mix(in srgb,var(--good) 18%,transparent)}
+.sync-state.warn{color:var(--crit)}
+@media (max-width:600px){ .acct-choice{grid-template-columns:1fr} .act.acct{width:36px;height:36px} }
 @media (prefers-reduced-motion: no-preference){ .alloc span,.timeline .track b,.ring circle{transition:all .4s ease} }
 </style>
 </head>
@@ -550,8 +572,13 @@ tr.bd-row.open td{background:var(--surface-2)}
       <button id="toggleImport" class="act" title="Gegevens toevoegen"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 14V4M6 8l4-4 4 4M4 16h12" stroke="currentColor" stroke-width="1.8" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg><span class="lbl" id="importLbl">Gegevens</span></button>
       <button id="toggleQuick" class="act primary" title="Snel toevoegen"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 4v12M4 10h12" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round"/></svg><span class="lbl">Snel toevoegen</span></button>
     </div>
+    <button id="acctBtn" class="act acct hidden" title="Account en synchroniseren" aria-label="Account"><svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="7" r="3.2" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M4 16.5c1.2-3 3.5-4.3 6-4.3s4.8 1.3 6 4.3" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg><span class="acct-ini" id="acctIni"></span><i class="acct-dot" id="acctDot"></i></button>
   </header>
-  <div id="dataLine" class="dataline hidden"><span id="dataBarText"></span></div>
+  <div id="dataLine" class="dataline hidden"><span id="dataBarText"></span><button type="button" class="sync-state hidden" id="syncState"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M6 15.5h8.5a3.5 3.5 0 00.4-6.98A5 5 0 005.3 9.6 3 3 0 006 15.5z"/></svg><span></span></button></div>
+  <div id="acctPanel" class="card hidden">
+    <div class="toolbar" style="margin-bottom:6px"><h3 style="margin:0" id="acctTitle">Inloggen</h3><span class="spacer"></span><button class="link" id="acctClose">Sluiten</button></div>
+    <div id="acctBody"></div>
+  </div>
   <div id="quickAdd" class="card hidden">
     <div class="toolbar" style="margin-bottom:6px"><h3 style="margin:0">Snel een transactie toevoegen</h3><span class="spacer"></span><button class="link" id="quickClose">Sluiten</button></div>
     <p class="small muted">Voor wat er gebeurd is sinds je laatste download. Dit telt meteen mee in je saldo en budget en staat als <em>voorlopig</em> in je transacties. Upload je later een CSV die deze datum bevat, dan wordt de voorlopige regel vanzelf vervangen, zodat niets dubbel telt.</p>
@@ -625,7 +652,8 @@ tr.bd-row.open td{background:var(--surface-2)}
       <h2 class="wz-title">Welkom! Bij welke bank zit je?</h2>
       <p class="muted">Dan weet de planner hoe je bankbestand eruitziet en vertelt hij je straks waar je het downloadt.</p>
       <div class="wz-chips" id="wzBanks"></div>
-      <p class="small muted" style="margin-top:14px">Heb je al een back-up? <label class="link-file"><input type="file" id="restoreFile3" accept=".json,application/json">Zet die terug</label></p>
+      <p class="small muted wz-login hidden" id="wzLogin" style="margin-top:14px">Gebruik je de planner al op een ander apparaat? <button type="button" class="link" id="wzLoginBtn">Log in</button> en je gegevens staan er meteen.</p>
+      <p class="small muted" style="margin-top:6px">Heb je al een back-up? <label class="link-file"><input type="file" id="restoreFile3" accept=".json,application/json">Zet die terug</label></p>
       <div class="small" id="backupMsg3"></div>
     </div>
     <div class="wz-step hidden" data-wz="1">
@@ -867,7 +895,7 @@ tr.bd-row.open td{background:var(--surface-2)}
       <div class="set-sec hidden" id="set-backup" data-sec="backup">
       <div class="card" id="backupCard">
         <h3>Back-up</h3>
-        <p class="small muted">Je gegevens staan alleen in deze browser, niet bij Claude. Safari kan die opslag soms leegmaken. Maak daarom na elke import een back-up: je krijgt een bestand dat je zelf bewaart, bijvoorbeeld in iCloud of OneDrive. Daarmee zet je alles in een paar tikken terug.</p>
+        <p class="small muted" id="backupText">Je gegevens staan alleen in deze browser. Safari kan die opslag soms leegmaken. Maak daarom na elke import een back-up: je krijgt een bestand dat je zelf bewaart, bijvoorbeeld in iCloud of OneDrive. Daarmee zet je alles in een paar tikken terug. Of log in, dan worden je gegevens automatisch bewaard.</p>
         <div class="row"><button class="primary" id="backupBtn">Back-up maken</button><label class="file"><input type="file" id="restoreFile" accept=".json,application/json"><span style="background:var(--surface-2);color:var(--text-primary);border:1px solid var(--border)">Back-up terugzetten…</span></label><span class="small muted" id="backupInfo"></span></div>
         <div class="small" id="backupMsg" style="margin-top:8px"></div>
         <textarea id="backupFallback" class="hidden" readonly style="margin-top:8px"></textarea>
@@ -1042,17 +1070,135 @@ function save(){
   cloudQueue();
 }
 
-/* Eerdere versie bewaarde een kopie in je Claude-account. Dat is uitgezet: alles blijft alleen in deze browser.
-   Deze opruimcode verwijdert een eventueel al opgeslagen kopie uit je account. */
-function cloudQueue(){}
-async function cloudCleanup(){
-  try{ if(!(window.claude&&window.claude.use)) return;
-    const [db,user]=await Promise.all([window.claude.use("db"), window.claude.use("user")]); if(!db||!user) return;
+/* ---------- Account & synchroniseren (Supabase) ----------
+   Ingelogd: je gegevens staan in je eigen rij in de tabel planner_state (alleen jij kunt die lezen, via Row Level Security).
+   Niet ingelogd: alles blijft alleen in deze browser, zoals altijd. */
+const SB_URL="https://iirxipkecwpsqgajorsj.supabase.co";
+const SB_KEY="sb_publishable__ZCE42c5mnhiIDwCf4Z6gQ_u1rzc-rd";
+const SB_LIB="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js";
+const sync={sb:null, user:null, status:"off", timer:null, busy:false, dirty:false, remoteAt:null, choice:null, ready:false, sent:false, sentTo:""};
+function inClaude(){ return !!(window.claude&&window.claude.use); }
+function hasData(st){ return ["bank","cc","sav"].some(k=>((st&&st[k])||[]).length>0); }
+function dataStamp(st){ let last="", n=0; ["bank","cc","sav"].forEach(k=>{ const L=(st&&st[k])||[]; n+=L.length; L.forEach(t=>{ if(t.date>last) last=t.date; }); }); return {last,n}; }
+function cloudQueue(){ if(!sync.user||!sync.ready) return; sync.dirty=true; clearTimeout(sync.timer); sync.timer=setTimeout(syncPush,1500); }
+function setSync(st){ sync.status=st; renderAcct(); }
+async function syncPush(){
+  if(!sync.user||!sync.ready) return; if(sync.busy){ sync.dirty=true; return; }
+  sync.busy=true; sync.dirty=false; setSync("saving");
+  try{
+    const now=new Date().toISOString();
+    const {error}=await sync.sb.from("planner_state").upsert({user_id:sync.user.id, data:state, updated_at:now});
+    if(error) throw error; sync.remoteAt=now; setSync("ok");
+  }catch(e){ console.warn("sync",e); setSync(navigator.onLine===false?"offline":"error"); }
+  sync.busy=false; if(sync.dirty) syncPush();
+}
+async function syncFetch(){
+  const {data,error}=await sync.sb.from("planner_state").select("data,updated_at").eq("user_id",sync.user.id).maybeSingle();
+  if(error) throw error; return data;
+}
+function applyRemote(row){
+  try{ const cur=localStorage.getItem(STORE_KEY); if(cur) localStorage.setItem(STORE_KEY+"-vorige", cur); }catch(_){}
+  state=Object.assign({bank:[],cc:[],sav:[],invValues:[],overrides:{},rules:[],fixedOff:{},fixedManual:[],scenario:[]}, row.data);
+  migrateLegacy(); applyCustomCats(); sync.remoteAt=row.updated_at;
+  try{ localStorage.setItem(STORE_KEY, JSON.stringify(state)); }catch(_){}
+  renderAll();
+}
+async function syncStart(){
+  setSync("loading");
+  try{
+    const row=await syncFetch(); const L=hasData(state), R=row&&hasData(row.data);
+    const known = state.syncUser===sync.user.id;
+    if(!R){ sync.ready=true; state.syncUser=sync.user.id; if(L) await syncPush(); else setSync("ok"); }
+    else if(!L){ applyRemote(row); state.syncUser=sync.user.id; sync.ready=true; setSync("ok"); }
+    else if(known){ // dit apparaat hoorde al bij dit account: nieuwste wint
+      if((state._savedAt||0) > (row.data._savedAt||0)){ sync.ready=true; await syncPush(); } else { applyRemote(row); sync.ready=true; setSync("ok"); }
+    } else { sync.choice=row; setSync("choose"); openAcct(); }
+  }catch(e){ console.warn("sync start",e); setSync(navigator.onLine===false?"offline":"error"); }
+}
+async function syncResume(){ // terug naar het tabblad: kijken of een ander apparaat iets nieuws heeft opgeslagen
+  if(!sync.user||!sync.ready||sync.busy||sync.dirty) return;
+  try{ const {data}=await sync.sb.from("planner_state").select("updated_at").eq("user_id",sync.user.id).maybeSingle();
+    if(data && data.updated_at!==sync.remoteAt && (!sync.remoteAt || data.updated_at>sync.remoteAt)){ const row=await syncFetch(); if(row && (row.data._savedAt||0)>(state._savedAt||0)){ applyRemote(row); setSync("ok"); } else sync.remoteAt=data.updated_at; } }catch(_){}
+}
+async function claudeCleanup(){
+  try{ const [db,user]=await Promise.all([window.claude.use("db"), window.claude.use("user")]); if(!db||!user) return;
     const uid=await user.id(); if(!uid) return; const col=db.collection("data/users/"+uid);
     const m=await col.doc("main").get(); if(!m.exists) return; const n=(m.data()||{}).n||0;
     for(let i=0;i<Math.max(n,12);i++){ try{ await col.doc("c"+i).delete(); }catch(_){} }
-    await col.doc("main").delete();
-  }catch(e){}
+    await col.doc("main").delete(); }catch(e){}
+}
+async function syncInit(){
+  if(inClaude()){ claudeCleanup(); return; } // in de Claude-weergave geen account; wel een oude kopie in je Claude-account opruimen
+  try{ if(!window.supabase) await loadScript(SB_LIB); }catch(e){ return; }
+  if(!window.supabase) return;
+  sync.sb=window.supabase.createClient(SB_URL, SB_KEY, {auth:{flowType:"implicit", persistSession:true, autoRefreshToken:true, detectSessionInUrl:true}});
+  $("acctBtn").classList.remove("hidden"); $("wzLogin").classList.remove("hidden");
+  sync.sb.auth.onAuthStateChange((ev,session)=>{
+    const u=session&&session.user;
+    if(u && (!sync.user || sync.user.id!==u.id)){ sync.user=u; sync.ready=false; if(location.hash.includes("access_token")) history.replaceState(null,"",location.pathname+location.search); setTimeout(syncStart,0); }
+    if(!u && sync.user){ sync.user=null; sync.ready=false; setSync("off"); }
+    renderAcct();
+  });
+  const {data}=await sync.sb.auth.getSession(); if(!data.session) setSync("off");
+  document.addEventListener("visibilitychange",()=>{ if(document.visibilityState==="visible") syncResume(); });
+  window.addEventListener("online",()=>{ if(sync.user&&sync.ready&&(sync.status==="offline"||sync.status==="error")) syncPush(); });
+}
+function openAcct(){ $("acctPanel").classList.remove("hidden"); renderAcct(); $("acctPanel").scrollIntoView({behavior:"smooth",block:"start"}); }
+function renderAcct(){
+  const btn=$("acctBtn"); if(!btn) return; const u=sync.user;
+  btn.classList.toggle("in", !!u); $("acctIni").textContent = u&&u.email ? u.email[0].toUpperCase() : "";
+  const dot=$("acctDot"); dot.className="acct-dot "+({ok:"ok",saving:"busy",loading:"busy",error:"warn",offline:"warn",choose:"warn"}[sync.status]||"");
+  const chip=$("syncState");
+  if(chip){ const show=!!u; chip.classList.toggle("hidden",!show);
+    const t={ok:"Gesynchroniseerd",saving:"Opslaan…",loading:"Ophalen…",error:"Niet gesynchroniseerd",offline:"Offline",choose:"Kies welke gegevens"}[sync.status]||"";
+    chip.className="sync-state "+({ok:"ok",error:"warn",offline:"warn",choose:"warn"}[sync.status]||"busy")+(show?"":" hidden"); chip.querySelector("span").textContent=t; }
+  const bt=$("backupText"); if(bt && u) bt.textContent="Je gegevens worden automatisch opgeslagen in je account en staan zo ook op je andere apparaten. Een back-up is een extra bestand dat je zelf bewaart, bijvoorbeeld in iCloud of OneDrive.";
+  const body=$("acctBody"); if(!body||$("acctPanel").classList.contains("hidden")) return;
+  if(!u){
+    $("acctTitle").textContent="Inloggen";
+    body.innerHTML = sync.sent ? `<p>We hebben een inloglink gestuurd naar <strong>${esc(sync.sentTo)}</strong>. Open je mail en tik op de link; je komt dan ingelogd terug in de planner.</p><p class="small muted">Geen mail gezien? Kijk ook in je spam. <button class="link" id="acctRetry">Ander e-mailadres of opnieuw sturen</button></p>`
+      : `<p class="small muted" style="margin-top:0">Log in met je e-mailadres om je gegevens op al je apparaten te hebben, bijvoorbeeld je telefoon en je laptop. Je krijgt een link in je mail, een wachtwoord is niet nodig. Je gegevens zijn alleen voor jou zichtbaar.</p>
+        <form id="acctForm" class="row" style="gap:8px"><input type="email" id="acctEmail" required placeholder="jouw@email.nl" autocomplete="email" style="flex:1;min-width:200px"><button class="primary" type="submit">Stuur inloglink</button></form><div class="small" id="acctMsg" style="margin-top:8px"></div>`;
+    return;
+  }
+  $("acctTitle").textContent="Je account";
+  if(sync.status==="choose" && sync.choice){
+    const R=dataStamp(sync.choice.data), L=dataStamp(state);
+    body.innerHTML=`<p style="margin-top:0">Zowel dit apparaat als je account bevat gegevens. Welke wil je gebruiken? De andere wordt vervangen.</p>
+      <div class="acct-choice"><button class="acct-opt" data-pick="remote"><strong>Uit mijn account</strong><span>${R.n} transacties, t/m ${R.last?fmtDate(R.last):"–"}<br>laatst opgeslagen ${fmtDate(String(sync.choice.updated_at).slice(0,10))}</span></button>
+      <button class="acct-opt" data-pick="local"><strong>Van dit apparaat</strong><span>${L.n} transacties, t/m ${L.last?fmtDate(L.last):"–"}</span></button></div>
+      <p class="small muted">Twijfel je? Maak eerst een back-up bij Instellingen → Back-up.</p>`;
+    return;
+  }
+  const st={ok:"Alles is opgeslagen in je account.",saving:"Bezig met opslaan…",loading:"Gegevens ophalen…",error:"Opslaan lukt nu niet. Je wijzigingen staan wel in deze browser en worden opgeslagen zodra het weer lukt.",offline:"Je bent offline. Wijzigingen worden opgeslagen zodra je weer verbinding hebt."}[sync.status]||"";
+  body.innerHTML=`<p style="margin-top:0">Ingelogd als <strong>${esc(u.email||"")}</strong></p><p class="small ${sync.status==="error"||sync.status==="offline"?"":"muted"}" ${sync.status==="error"?'style="color:var(--crit)"':""}>${st}</p>
+    <div class="row" style="gap:8px;margin-top:10px"><button id="acctOut">Uitloggen</button><button class="link danger" id="acctOutWipe">Uitloggen en gegevens van dit apparaat wissen</button></div>
+    <p class="small muted" style="margin-top:10px">Gebruik je een computer van iemand anders? Kies dan de tweede optie, dan blijven er geen gegevens achter.</p>`;
+}
+function bindAcct(){
+$("acctBtn").addEventListener("click",()=>{ if($("acctPanel").classList.contains("hidden")) openAcct(); else $("acctPanel").classList.add("hidden"); });
+$("acctClose").addEventListener("click",()=>$("acctPanel").classList.add("hidden"));
+$("syncState").addEventListener("click",openAcct);
+$("wzLoginBtn").addEventListener("click",openAcct);
+$("acctPanel").addEventListener("submit",async e=>{ if(e.target.id!=="acctForm") return; e.preventDefault();
+  const email=$("acctEmail").value.trim(); const msg=$("acctMsg"); const btn=e.target.querySelector("button"); btn.disabled=true; msg.textContent="Versturen…";
+  const {error}=await sync.sb.auth.signInWithOtp({email, options:{emailRedirectTo: location.origin+location.pathname}});
+  btn.disabled=false;
+  if(error){ msg.innerHTML=`<span style="color:var(--crit)">${/rate|seconds/i.test(error.message)?"Even wachten: je kunt over een minuutje opnieuw een link aanvragen.":"Versturen lukte niet: "+esc(error.message)}</span>`; return; }
+  sync.sent=true; sync.sentTo=email; renderAcct(); });
+$("acctPanel").addEventListener("click",async e=>{
+  if(e.target.id==="acctRetry"){ sync.sent=false; renderAcct(); return; }
+  const pick=e.target.closest("[data-pick]");
+  if(pick){ const row=sync.choice; sync.choice=null; state.syncUser=sync.user.id;
+    if(pick.dataset.pick==="remote"){ applyRemote(row); sync.ready=true; setSync("ok"); } else { sync.ready=true; await syncPush(); }
+    return; }
+  if(e.target.id==="acctOut"||e.target.id==="acctOutWipe"){ const wipe=e.target.id==="acctOutWipe";
+    if(sync.dirty||sync.busy){ clearTimeout(sync.timer); try{ await syncPush(); }catch(_){} }
+    await sync.sb.auth.signOut(); sync.user=null; sync.ready=false; sync.sent=false;
+    if(wipe){ try{ localStorage.removeItem(STORE_KEY); localStorage.removeItem(STORE_KEY+"-vorige"); }catch(_){} location.reload(); return; }
+    delete state.syncUser; try{ localStorage.setItem(STORE_KEY, JSON.stringify(state)); }catch(_){}
+    setSync("off"); renderAcct(); }
+});
 }
 
 /* ---------- Helpers ---------- */
@@ -2847,7 +2993,7 @@ $("demoBtn").addEventListener("click",()=>{
 function syncCalcOpen(){ const d=$("calcDetails"); if(d && window.matchMedia("(min-width:601px)").matches) d.open=true; }
 syncCalcOpen(); window.addEventListener("resize", syncCalcOpen);
 load();
-setTimeout(cloudCleanup,0);
+bindAcct(); setTimeout(syncInit,0);
 renderAll();
 })();
 </script>
